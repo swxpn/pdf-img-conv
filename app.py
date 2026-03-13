@@ -894,61 +894,6 @@ HTML = """<!DOCTYPE html>
     gap: .75rem;
   }
 
-  .theme-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: .55rem;
-    padding: .58rem .8rem;
-    border-radius: 999px;
-    border: 1px solid var(--sw-line);
-    background: rgba(255, 255, 255, .72);
-    color: var(--sw-ink);
-    cursor: pointer;
-    font: inherit;
-    font-size: .82rem;
-    font-weight: 700;
-    transition: background .18s ease, border-color .18s ease, transform .18s ease;
-    backdrop-filter: blur(12px);
-  }
-
-  body.dark-mode .theme-toggle {
-    background: rgba(35, 28, 24, .84);
-  }
-
-  .theme-toggle:hover {
-    transform: translateY(-1px);
-  }
-
-  .theme-toggle-track {
-    position: relative;
-    width: 40px;
-    height: 22px;
-    border-radius: 999px;
-    background: linear-gradient(135deg, #ffd29e, #ffb357);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .24);
-  }
-
-  .theme-toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #fff;
-    transition: transform .18s ease;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
-  }
-
-  body.dark-mode .theme-toggle-track {
-    background: linear-gradient(135deg, #5a3b24, #362821);
-  }
-
-  body.dark-mode .theme-toggle-thumb {
-    transform: translateX(18px);
-    background: #ffd7af;
-  }
-
   .hero-card {
     background: linear-gradient(120deg, var(--sw-card) 0%, var(--sw-surface-soft) 100%);
     border: 1px solid var(--sw-line);
@@ -1185,7 +1130,7 @@ HTML = """<!DOCTYPE html>
 
   .status { font-size: 0.85rem; margin-top: .8rem; min-height: 1.2rem; color: var(--sw-muted); }
   .status.error { color: #c0392b; font-weight: 600; }
-  .status.ok { color: #1f8c4d; font-weight: 600; }
+  .status.ok { color: #bdaea2; font-weight: 600; }
 
   .download-btn {
     display: none;
@@ -1245,7 +1190,7 @@ HTML = """<!DOCTYPE html>
     .pill-row { justify-content: flex-start; }
     main { grid-template-columns: 1fr; }
     .topbar { align-items: flex-start; }
-    .topbar-actions { width: 100%; justify-content: space-between; }
+    .topbar-actions { width: 100%; }
   }
 </style>
 </head>
@@ -1259,12 +1204,6 @@ HTML = """<!DOCTYPE html>
       </div>
       <div class="topbar-actions">
         <div class="top-note">Fast, clean, and one-click file delivery</div>
-        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" aria-pressed="false">
-          <span class="theme-toggle-track" aria-hidden="true">
-            <span class="theme-toggle-thumb"></span>
-          </span>
-          <span id="themeToggleLabel">Dark mode</span>
-        </button>
       </div>
     </div>
     <div class="hero-card">
@@ -1474,35 +1413,19 @@ function switchTab(tab) {
   event.target.classList.add('active');
 }
 
-const themeToggle = document.getElementById("themeToggle");
-const themeToggleLabel = document.getElementById("themeToggleLabel");
-
-function updateThemeToggle(isDark) {
-  themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
-  themeToggleLabel.textContent = isDark ? "Light mode" : "Dark mode";
-}
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 function applyTheme(theme) {
   const isDark = theme === "dark";
   document.body.classList.toggle("dark-mode", isDark);
-  updateThemeToggle(isDark);
 }
 
-function getInitialTheme() {
-  const storedTheme = window.localStorage.getItem("theme");
-  if (storedTheme === "dark" || storedTheme === "light") {
-    return storedTheme;
-  }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+function applySystemTheme() {
+  applyTheme(systemTheme.matches ? "dark" : "light");
 }
 
-applyTheme(getInitialTheme());
-
-themeToggle.addEventListener("click", () => {
-  const nextTheme = document.body.classList.contains("dark-mode") ? "light" : "dark";
-  window.localStorage.setItem("theme", nextTheme);
-  applyTheme(nextTheme);
-});
+applySystemTheme();
+systemTheme.addEventListener("change", applySystemTheme);
 
 const dropZone = document.getElementById("dropZone");
 const pdfInput = document.getElementById("pdfInput");
