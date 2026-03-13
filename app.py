@@ -257,7 +257,7 @@ def convert():
                 "session": session_id,
                 "count": len(pages),
                 "images": [f"/file/{session_id}/{n}" for n in image_names],
-                "zip": f"/file/{session_id}/{zip_name}",
+            "zip": f"/download/{session_id}/{zip_name}",
             }
         )
 
@@ -372,7 +372,7 @@ def img_to_pdf():
             {
                 "session": session_id,
                 "pages": len(files),
-                "pdf": f"/file/{session_id}/{pdf_name}",
+            "pdf": f"/download/{session_id}/{pdf_name}",
             }
         )
 
@@ -398,6 +398,18 @@ def serve_file(session_id, filename):
         as_attachment=as_attachment,
         download_name=safe_name if as_attachment else None,
     )
+
+
+@app.route("/download/<session_id>/<filename>")
+def download_file(session_id, filename):
+    meta = SESSIONS.get(session_id)
+    if not meta:
+        return "Session not found or expired.", 404
+    safe_name = os.path.basename(filename)
+    path = os.path.join(meta["dir"], safe_name)
+    if not os.path.isfile(path):
+        return "File not found.", 404
+    return send_file(path, as_attachment=True, download_name=safe_name)
 
 
 HTML = """<!DOCTYPE html>
@@ -641,7 +653,9 @@ async function convertPdf2Img() {
     setStatus("status", `Converted ${data.count} page(s) to ${fmt} at ${dpi} DPI.`, "ok");
     renderGallery(data.images);
     const dl = document.getElementById("downloadBtn");
-    dl.href = data.zip; dl.style.display = "block";
+    dl.href = data.zip;
+    dl.download = data.zip.split('/').pop() || "converted_images.zip";
+    dl.style.display = "block";
   } catch (e) {
     setStatus("status", "Network error: " + e.message, "error");
   } finally {
@@ -732,7 +746,9 @@ async function convertImg2Pdf() {
 
     setStatus("img2pdfStatus", `Created PDF with ${data.pages} page(s).`, "ok");
     const dl = document.getElementById("img2pdfDownload");
-    dl.href = data.pdf; dl.style.display = "block";
+    dl.href = data.pdf;
+    dl.download = data.pdf.split('/').pop() || "converted.pdf";
+    dl.style.display = "block";
   } catch (e) {
     setStatus("img2pdfStatus", "Network error: " + e.message, "error");
   } finally {
