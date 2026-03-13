@@ -418,69 +418,312 @@ HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PDF &amp; Image Converter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --sw-orange: #fc8019;
+    --sw-orange-deep: #e86c00;
+    --sw-ink: #1f1f24;
+    --sw-muted: #63636f;
+    --sw-bg: #fff7f1;
+    --sw-card: #ffffff;
+    --sw-line: #f0dfd2;
+    --sw-green: #27ae60;
+  }
+
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #f4f6f9; color: #1a1a2e; min-height: 100vh; }
-  header { background: #2b2d42; color: #fff; padding: 1.2rem 2rem; }
-  header h1 { font-size: 1.4rem; font-weight: 600; }
-  header p { font-size: 0.85rem; opacity: 0.7; margin-top: 0.25rem; }
-  .tabs { display: flex; gap: 0; max-width: 1100px; margin: 1.5rem auto 0; padding: 0 1rem; }
+  body {
+    font-family: "Poppins", sans-serif;
+    color: var(--sw-ink);
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at 85% -10%, #ffd8bd 0%, rgba(255, 216, 189, 0) 40%),
+      radial-gradient(circle at 10% 0%, #ffe8d7 0%, rgba(255, 232, 215, 0) 42%),
+      var(--sw-bg);
+  }
+
+  .container {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 0 1rem;
+  }
+
+  .hero {
+    padding: 1.25rem 0 1.1rem;
+  }
+
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+    font-weight: 800;
+    letter-spacing: .2px;
+  }
+
+  .brand-badge {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--sw-orange), var(--sw-orange-deep));
+    display: grid;
+    place-items: center;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 800;
+    box-shadow: 0 10px 22px rgba(252, 128, 25, .33);
+  }
+
+  .top-note {
+    color: var(--sw-muted);
+    font-size: .83rem;
+    font-weight: 500;
+  }
+
+  .hero-card {
+    background: linear-gradient(120deg, #fff 0%, #fff6ef 100%);
+    border: 1px solid #ffe0c7;
+    border-radius: 24px;
+    padding: 1.4rem 1.25rem;
+    box-shadow: 0 18px 38px rgba(252, 128, 25, .13);
+    animation: rise .45s ease-out;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.2fr .8fr;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.4rem, 2.6vw, 2.2rem);
+    line-height: 1.15;
+    margin-bottom: .35rem;
+  }
+
+  .hero p {
+    color: var(--sw-muted);
+    font-size: .92rem;
+    max-width: 54ch;
+  }
+
+  .pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+    justify-content: flex-end;
+  }
+
+  .pill {
+    border: 1px solid #ffd9bc;
+    background: #fff;
+    color: #7f4a1d;
+    padding: .45rem .68rem;
+    border-radius: 999px;
+    font-size: .78rem;
+    font-weight: 600;
+  }
+
+  .tabs {
+    display: flex;
+    gap: .6rem;
+    max-width: 1140px;
+    margin: .7rem auto 0;
+    padding: 0 1rem;
+  }
   .tab-btn {
-    padding: .6rem 1.4rem; background: #e0e3ea; border: none; cursor: pointer;
-    font-size: 0.9rem; font-weight: 600; color: #555; border-radius: 8px 8px 0 0;
+    padding: .66rem 1.1rem;
+    background: #fff;
+    border: 1px solid var(--sw-line);
+    cursor: pointer;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #6c6c74;
+    border-radius: 999px;
     transition: all .15s;
   }
-  .tab-btn.active { background: #fff; color: #2b2d42; }
+  .tab-btn.active {
+    background: linear-gradient(135deg, var(--sw-orange), var(--sw-orange-deep));
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 11px 24px rgba(252, 128, 25, .36);
+  }
+
   .tab-content { display: none; }
   .tab-content.active { display: grid; }
-  main { max-width: 1100px; margin: 0 auto; padding: 0 1rem 2rem; display: grid; grid-template-columns: 320px 1fr; gap: 1.5rem; }
-  .panel { background: #fff; border-radius: 0 10px 10px 10px; padding: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,.07); }
-  .panel.right { border-radius: 0 0 10px 10px; }
-  .panel h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1.2rem; }
-  label { display: block; font-size: 0.82rem; font-weight: 500; margin-bottom: 0.3rem; color: #444; }
-  .field { margin-bottom: 1rem; }
-  input[type=text], select {
-    width: 100%; padding: .5rem .7rem; border: 1px solid #ddd; border-radius: 6px;
-    font-size: 0.9rem; outline: none; transition: border .15s;
+
+  main {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: .8rem 1rem 2.2rem;
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 1rem;
   }
-  input[type=text]:focus, select:focus { border-color: #4f8ef7; }
+
+  .panel {
+    background: var(--sw-card);
+    border-radius: 18px;
+    padding: 1.15rem;
+    border: 1px solid #f4e0d1;
+    box-shadow: 0 10px 30px rgba(31, 31, 36, .06);
+    animation: rise .55s ease-out;
+  }
+
+  .panel h2 {
+    font-size: .98rem;
+    font-weight: 700;
+    margin-bottom: .95rem;
+  }
+
+  label {
+    display: block;
+    font-size: 0.76rem;
+    font-weight: 700;
+    margin-bottom: 0.34rem;
+    color: #595965;
+    text-transform: uppercase;
+    letter-spacing: .35px;
+  }
+
+  .field { margin-bottom: .85rem; }
+
+  input[type=text], select {
+    width: 100%;
+    padding: .66rem .72rem;
+    border: 1px solid #efddcf;
+    border-radius: 11px;
+    font-size: 0.9rem;
+    outline: none;
+    transition: border .15s, box-shadow .15s;
+    background: #fff;
+  }
+
+  input[type=text]:focus, select:focus {
+    border-color: #ffc799;
+    box-shadow: 0 0 0 4px rgba(252, 128, 25, .13);
+  }
+
   .radio-group { display: flex; gap: .6rem; }
   .radio-group label {
-    flex: 1; text-align: center; padding: .45rem; border: 1px solid #ddd;
-    border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500;
-    transition: all .15s; color: #444;
+    flex: 1;
+    text-align: center;
+    padding: .5rem;
+    border: 1px solid #efddcf;
+    border-radius: 11px;
+    cursor: pointer;
+    font-size: 0.83rem;
+    font-weight: 600;
+    transition: all .15s;
+    color: #444;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: 0;
   }
+
   .radio-group input { display: none; }
-  .radio-group input:checked + label { background: #2b2d42; color: #fff; border-color: #2b2d42; }
+  .radio-group input:checked + label {
+    background: #fff4eb;
+    color: #7d3f13;
+    border-color: #ffc799;
+  }
+
   .drop-zone {
-    border: 2px dashed #bbb; border-radius: 8px; padding: 2rem 1rem;
-    text-align: center; cursor: pointer; transition: border .15s; margin-bottom: 1rem;
+    border: 2px dashed #ffcda2;
+    border-radius: 14px;
+    padding: 1.4rem .75rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all .18s;
+    margin-bottom: .75rem;
+    background: linear-gradient(180deg, #fff9f4 0%, #fff 100%);
   }
-  .drop-zone.dragover { border-color: #4f8ef7; background: #f0f5ff; }
+
+  .drop-zone:hover { transform: translateY(-2px); }
+  .drop-zone.dragover { border-color: var(--sw-orange); background: #fff2e7; }
   .drop-zone input { display: none; }
-  .drop-zone p { font-size: 0.85rem; color: #888; margin-top: 0.5rem; }
-  .drop-zone .filename { font-size: 0.85rem; color: #2b2d42; font-weight: 600; margin-top: .5rem; }
+
+  .drop-zone p { font-size: 0.84rem; color: #807b75; margin-top: 0.48rem; }
+  .drop-zone .filename { font-size: 0.84rem; color: #6e360f; font-weight: 600; margin-top: .46rem; }
+
   .btn {
-    display: block; width: 100%; padding: .65rem; background: #2b2d42; color: #fff;
-    border: none; border-radius: 6px; font-size: 0.95rem; font-weight: 600;
-    cursor: pointer; transition: background .15s; margin-top: 0.5rem;
+    display: block;
+    width: 100%;
+    padding: .74rem;
+    background: linear-gradient(135deg, var(--sw-orange), var(--sw-orange-deep));
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 0.9rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform .15s ease, box-shadow .15s ease;
+    margin-top: 0.45rem;
+    box-shadow: 0 10px 20px rgba(252, 128, 25, .28);
   }
-  .btn:hover { background: #3a3d56; }
+
+  .btn:hover { transform: translateY(-1px); }
   .btn:disabled { background: #aaa; cursor: not-allowed; }
+
   .status { font-size: 0.85rem; margin-top: .8rem; min-height: 1.2rem; color: #555; }
-  .status.error { color: #c0392b; }
-  .status.ok { color: #27ae60; }
+  .status.error { color: #c0392b; font-weight: 600; }
+  .status.ok { color: #1f8c4d; font-weight: 600; }
+
   .download-btn {
-    display: none; width: 100%; padding: .55rem; background: #27ae60; color: #fff;
-    border: none; border-radius: 6px; font-size: 0.88rem; font-weight: 600;
-    cursor: pointer; text-align: center; margin-top: .8rem; text-decoration: none;
+    display: none;
+    width: 100%;
+    padding: .62rem;
+    background: var(--sw-green);
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 0.87rem;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: center;
+    margin-top: .72rem;
+    text-decoration: none;
   }
-  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .8rem; }
-  .gallery img { width: 100%; border-radius: 6px; border: 1px solid #e0e0e0; object-fit: contain; background: #fafafa; cursor: pointer; transition: box-shadow .15s; }
+
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: .7rem; }
+  .gallery img {
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid #f1e0d2;
+    object-fit: contain;
+    background: #fff;
+    cursor: pointer;
+    transition: box-shadow .15s, transform .15s;
+  }
+
   .gallery img:hover { box-shadow: 0 4px 14px rgba(0,0,0,.15); }
-  .empty { color: #aaa; font-size: 0.9rem; text-align: center; padding: 3rem 0; }
+  .empty {
+    color: #938c85;
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 2.5rem 0;
+    border: 1px dashed #ebd7c8;
+    border-radius: 14px;
+    background: #fff;
+  }
+
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
   #lightbox { display:none; position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:100; align-items:center; justify-content:center; }
   #lightbox.open { display:flex; }
   #lightbox img { max-width:90vw; max-height:90vh; border-radius:8px; }
@@ -488,13 +731,40 @@ HTML = """<!DOCTYPE html>
   .file-list { list-style: none; margin-top: .5rem; }
   .file-list li { font-size: 0.82rem; color: #2b2d42; padding: .15rem 0; display:flex; align-items:center; gap:.4rem; }
   .file-list li .remove { color:#c0392b; cursor:pointer; font-weight:700; }
+
+  @media (max-width: 920px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .pill-row { justify-content: flex-start; }
+    main { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>PDF &amp; Image Converter</h1>
-  <p>Convert PDF to images or images to PDF</p>
-</header>
+<section class="hero">
+  <div class="container">
+    <div class="topbar">
+      <div class="brand">
+        <span class="brand-badge">S</span>
+        <span>Swiggy-Style Converter</span>
+      </div>
+      <div class="top-note">Fast, clean, and one-click file delivery</div>
+    </div>
+    <div class="hero-card">
+      <div class="hero-grid">
+        <div>
+          <h1>Hungry for quick conversions?</h1>
+          <p>Upload PDFs or images, pick your format, and get instant downloadable files with a UI inspired by modern delivery apps.</p>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Lightning Fast</span>
+          <span class="pill">Secure Sessions</span>
+          <span class="pill">HD Output</span>
+          <span class="pill">No Signup</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('pdf2img')">PDF &rarr; Image</button>
