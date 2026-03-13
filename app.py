@@ -653,8 +653,8 @@ async function convertPdf2Img() {
     setStatus("status", `Converted ${data.count} page(s) to ${fmt} at ${dpi} DPI.`, "ok");
     renderGallery(data.images);
     const dl = document.getElementById("downloadBtn");
-    dl.href = data.zip;
-    dl.download = data.zip.split('/').pop() || "converted_images.zip";
+    dl.dataset.url = data.zip;
+    dl.dataset.name = data.zip.split('/').pop() || "converted_images.zip";
     dl.style.display = "block";
   } catch (e) {
     setStatus("status", "Network error: " + e.message, "error");
@@ -746,8 +746,8 @@ async function convertImg2Pdf() {
 
     setStatus("img2pdfStatus", `Created PDF with ${data.pages} page(s).`, "ok");
     const dl = document.getElementById("img2pdfDownload");
-    dl.href = data.pdf;
-    dl.download = data.pdf.split('/').pop() || "converted.pdf";
+    dl.dataset.url = data.pdf;
+    dl.dataset.name = data.pdf.split('/').pop() || "converted.pdf";
     dl.style.display = "block";
   } catch (e) {
     setStatus("img2pdfStatus", "Network error: " + e.message, "error");
@@ -761,6 +761,64 @@ function setStatus(id, msg, cls) {
   const el = document.getElementById(id);
   el.textContent = msg; el.className = "status " + cls;
 }
+
+function parseDownloadName(contentDisposition, fallbackName) {
+  if (!contentDisposition) return fallbackName;
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (_) {
+      return fallbackName;
+    }
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return plainMatch && plainMatch[1] ? plainMatch[1] : fallbackName;
+}
+
+async function downloadFromEndpoint(buttonId, statusId) {
+  const btn = document.getElementById(buttonId);
+  const url = btn.dataset.url;
+  const fallbackName = btn.dataset.name || "download.bin";
+  if (!url) {
+    setStatus(statusId, "Download link is missing.", "error");
+    return;
+  }
+
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      throw new Error(`Download failed (${res.status})`);
+    }
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (contentType.includes("text/html")) {
+      throw new Error("Server returned an HTML page instead of a file.");
+    }
+
+    const blob = await res.blob();
+    const filename = parseDownloadName(res.headers.get("content-disposition"), fallbackName);
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+  } catch (e) {
+    setStatus(statusId, "Download error: " + e.message, "error");
+  }
+}
+
+document.getElementById("downloadBtn").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadFromEndpoint("downloadBtn", "status");
+});
+
+document.getElementById("img2pdfDownload").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadFromEndpoint("img2pdfDownload", "img2pdfStatus");
+});
 
 function openLightbox(src) {
   document.getElementById("lightboxImg").src = src;
