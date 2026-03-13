@@ -382,6 +382,368 @@ def img_to_pdf():
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return jsonify({"error": f"Conversion failed: {e}"}), 500
 
+@app.route("/compress-pdf", methods=["POST"])
+def compress_pdf():
+    pdf_file = request.files.get("pdf")
+    target_percent_raw = request.form.get("target_percent", "30")
+    force_compression = (
+        request.form.get("force_compression", "false").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+    if not pdf_file or pdf_file.filename == "":
+        return jsonify({"error": "No PDF file provided."}), 400
+
+    try:
+        target_percent = float(target_percent_raw)
+    except ValueError:
+        return jsonify({"error": "Target percent must be a number."}), 400
+
+    if target_percent < 1 or target_percent > 90:
+        return jsonify({"error": "Target percent must be between 1 and 90."}), 400
+
+    session_id = uuid.uuid4().hex
+    tmp_dir = tempfile.mkdtemp(prefix=f"pdfcompress_{session_id}_")
+
+    try:
+        import shutil
+
+        input_path = os.path.join(tmp_dir, "input.pdf")
+        pdf_file.save(input_path)
+        original_size = os.path.getsize(input_path)
+
+        probe_doc = fitz.open(input_path)
+        if probe_doc.needs_pass:
+            probe_doc.close()
+            return jsonify({"error": "Password-protected PDFs are not supported."}), 400
+        probe_doc.close()
+
+        profiles = [
+            {
+                "name": "light",
+                "subset_fonts": False,
+                "save_options": {"garbage": 1, "deflate": True, "clean": False, "linear": False},
+            },
+            {
+                "name": "balanced",
+                "subset_fonts": False,
+                "save_options": {"garbage": 3, "deflate": True, "clean": True, "linear": False},
+            },
+            {
+                "name": "aggressive",
+                "subset_fonts": True,
+                "save_options": {"garbage": 4, "deflate": True, "clean": True, "linear": False},
+            },
+        ]
+
+        best_attempt = None
+        selected_attempt = None
+
+        for idx, profile in enumerate(profiles):
+            candidate_path = os.path.join(tmp_dir, f"candidate_{idx}.pdf")
+            doc = fitz.open(input_path)
+            if profile["subset_fonts"] and hasattr(doc, "subset_fonts"):
+                doc.subset_fonts()
+            doc.save(candidate_path, **profile["save_options"])
+            doc.close()
+
+            compressed_size = os.path.getsize(candidate_path)
+            reduction = 0.0
+            if original_size > 0:
+                reduction = (1 - (compressed_size / original_size)) * 100
+
+            attempt = {
+                "path": candidate_path,
+                "size": compressed_size,
+                "reduction": reduction,
+                "profile": profile["name"],
+            }
+
+            if best_attempt is None or attempt["reduction"] > best_attempt["reduction"]:
+                best_attempt = attempt
+
+            if attempt["reduction"] >= target_percent and selected_attempt is None:
+                selected_attempt = attempt
+
+        if selected_attempt is None:
+            selected_attempt = best_attempt
+
+        forced_used = False
+        if force_compression and selected_attempt["reduction"] < target_percent:
+            force_plans = [
+                {"name": "force-96dpi-q55", "dpi": 96, "jpg_quality": 55},
+                {"name": "force-84dpi-q45", "dpi": 84, "jpg_quality": 45},
+                {"name": "force-72dpi-q38", "dpi": 72, "jpg_quality": 38},
+                {"name": "force-60dpi-q30", "dpi": 60, "jpg_quality": 30},
+            ]
+
+            force_best = None
+            force_selected = None
+
+            for idx, plan in enumerate(force_plans):
+                candidate_path = os.path.join(tmp_dir, f"force_candidate_{idx}.pdf")
+                src = fitz.open(input_path)
+                dst = fitz.open()
+                try:
+                    for page in src:
+                        rect = page.rect
+                        out_page = dst.new_page(width=rect.width, height=rect.height)
+                        scale = plan["dpi"] / 72.0
+                        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                        img_bytes = pix.tobytes("jpg", jpg_quality=plan["jpg_quality"])
+                        out_page.insert_image(out_page.rect, stream=img_bytes, keep_proportion=False)
+                    dst.save(candidate_path, garbage=4, deflate=True, clean=True)
+                finally:
+                    src.close()
+                    dst.close()
+
+                compressed_size = os.path.getsize(candidate_path)
+                reduction = 0.0
+                if original_size > 0:
+                    reduction = (1 - (compressed_size / original_size)) * 100
+
+                attempt = {
+                    "path": candidate_path,
+                    "size": compressed_size,
+                    "reduction": reduction,
+                    "profile": plan["name"],
+                }
+
+                if force_best is None or attempt["reduction"] > force_best["reduction"]:
+                    force_best = attempt
+
+                if attempt["reduction"] >= target_percent and force_selected is None:
+                    force_selected = attempt
+
+            chosen_force_attempt = force_selected or force_best
+            if chosen_force_attempt and chosen_force_attempt["reduction"] > selected_attempt["reduction"]:
+                selected_attempt = chosen_force_attempt
+                forced_used = True
+
+        base = os.path.splitext(os.path.basename(pdf_file.filename))[0] or "document"
+        out_name = f"compressed-{base}.pdf"
+        out_path = os.path.join(tmp_dir, out_name)
+        shutil.copyfile(selected_attempt["path"], out_path)
+
+        SESSIONS[session_id] = {
+            "dir": tmp_dir,
+            "pdf": out_name,
+            "created": time.time(),
+        }
+
+        return jsonify(
+            {
+                "session": session_id,
+                "pdf": f"/download/{session_id}/{out_name}",
+                "original_bytes": original_size,
+                "compressed_bytes": selected_attempt["size"],
+                "reduction_percent": round(selected_attempt["reduction"], 2),
+                "target_percent": round(target_percent, 2),
+                "achieved_target": selected_attempt["reduction"] >= target_percent,
+                "profile": selected_attempt["profile"],
+                "force_requested": force_compression,
+                "forced_used": forced_used,
+            }
+        )
+
+    except Exception as e:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return jsonify({"error": f"Compression failed: {e}"}), 500
+
+@app.route("/compress-image", methods=["POST"])
+def compress_image():
+    image_file = request.files.get("image")
+    target_percent_raw = request.form.get("target_percent", "30")
+    force_compression = (
+        request.form.get("force_compression", "false").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+    if not image_file or image_file.filename == "":
+        return jsonify({"error": "No image file provided."}), 400
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        return jsonify({"error": "Unsupported image format."}), 400
+
+    try:
+        target_percent = float(target_percent_raw)
+    except ValueError:
+        return jsonify({"error": "Target percent must be a number."}), 400
+
+    if target_percent < 1 or target_percent > 90:
+        return jsonify({"error": "Target percent must be between 1 and 90."}), 400
+
+    session_id = uuid.uuid4().hex
+    tmp_dir = tempfile.mkdtemp(prefix=f"imgcompress_{session_id}_")
+
+    try:
+        import shutil
+
+        input_path = os.path.join(tmp_dir, f"input{ext if ext else '.img'}")
+        image_file.save(input_path)
+        original_size = os.path.getsize(input_path)
+
+        with Image.open(input_path) as source_img:
+            source_img.load()
+            has_alpha = "A" in source_img.getbands()
+
+            profiles = [
+                {"name": "light", "quality": 88, "scale": 1.0, "png_colors": None},
+                {"name": "balanced", "quality": 76, "scale": 1.0, "png_colors": 192},
+                {"name": "aggressive", "quality": 64, "scale": 0.92, "png_colors": 128},
+            ]
+
+            best_attempt = None
+            selected_attempt = None
+
+            for idx, profile in enumerate(profiles):
+                candidate_path = os.path.join(tmp_dir, f"img_candidate_{idx}")
+                img = source_img.copy()
+
+                if profile["scale"] < 1.0:
+                    w = max(1, int(img.width * profile["scale"]))
+                    h = max(1, int(img.height * profile["scale"]))
+                    img = img.resize((w, h), Image.LANCZOS)
+
+                if has_alpha:
+                    if img.mode not in ("RGBA", "LA"):
+                        img = img.convert("RGBA")
+                    if profile["png_colors"]:
+                        img = img.convert("P", palette=Image.ADAPTIVE, colors=profile["png_colors"])
+                    out_ext = "png"
+                    out_file = f"{candidate_path}.png"
+                    img.save(out_file, format="PNG", optimize=True, compress_level=9)
+                else:
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    out_ext = "jpg"
+                    out_file = f"{candidate_path}.jpg"
+                    img.save(
+                        out_file,
+                        format="JPEG",
+                        quality=profile["quality"],
+                        optimize=True,
+                        progressive=True,
+                    )
+
+                compressed_size = os.path.getsize(out_file)
+                reduction = 0.0
+                if original_size > 0:
+                    reduction = (1 - (compressed_size / original_size)) * 100
+
+                attempt = {
+                    "path": out_file,
+                    "size": compressed_size,
+                    "reduction": reduction,
+                    "profile": profile["name"],
+                    "ext": out_ext,
+                }
+
+                if best_attempt is None or attempt["reduction"] > best_attempt["reduction"]:
+                    best_attempt = attempt
+
+                if attempt["reduction"] >= target_percent and selected_attempt is None:
+                    selected_attempt = attempt
+
+            if selected_attempt is None:
+                selected_attempt = best_attempt
+
+            forced_used = False
+            if force_compression and selected_attempt["reduction"] < target_percent:
+                force_plans = [
+                    {"name": "force-75", "quality": 75, "scale": 0.9, "png_colors": 96},
+                    {"name": "force-60", "quality": 60, "scale": 0.82, "png_colors": 64},
+                    {"name": "force-45", "quality": 45, "scale": 0.72, "png_colors": 48},
+                    {"name": "force-35", "quality": 35, "scale": 0.62, "png_colors": 32},
+                ]
+
+                force_best = None
+                force_selected = None
+
+                for idx, plan in enumerate(force_plans):
+                    candidate_path = os.path.join(tmp_dir, f"img_force_candidate_{idx}")
+                    img = source_img.copy()
+                    w = max(1, int(img.width * plan["scale"]))
+                    h = max(1, int(img.height * plan["scale"]))
+                    img = img.resize((w, h), Image.LANCZOS)
+
+                    if has_alpha:
+                        if img.mode not in ("RGBA", "LA"):
+                            img = img.convert("RGBA")
+                        img = img.convert("P", palette=Image.ADAPTIVE, colors=plan["png_colors"])
+                        out_ext = "png"
+                        out_file = f"{candidate_path}.png"
+                        img.save(out_file, format="PNG", optimize=True, compress_level=9)
+                    else:
+                        if img.mode != "RGB":
+                            img = img.convert("RGB")
+                        out_ext = "jpg"
+                        out_file = f"{candidate_path}.jpg"
+                        img.save(
+                            out_file,
+                            format="JPEG",
+                            quality=plan["quality"],
+                            optimize=True,
+                            progressive=True,
+                        )
+
+                    compressed_size = os.path.getsize(out_file)
+                    reduction = 0.0
+                    if original_size > 0:
+                        reduction = (1 - (compressed_size / original_size)) * 100
+
+                    attempt = {
+                        "path": out_file,
+                        "size": compressed_size,
+                        "reduction": reduction,
+                        "profile": plan["name"],
+                        "ext": out_ext,
+                    }
+
+                    if force_best is None or attempt["reduction"] > force_best["reduction"]:
+                        force_best = attempt
+
+                    if attempt["reduction"] >= target_percent and force_selected is None:
+                        force_selected = attempt
+
+                chosen_force_attempt = force_selected or force_best
+                if chosen_force_attempt and chosen_force_attempt["reduction"] > selected_attempt["reduction"]:
+                    selected_attempt = chosen_force_attempt
+                    forced_used = True
+
+        base = os.path.splitext(os.path.basename(image_file.filename))[0] or "image"
+        out_name = f"compressed-{base}.{selected_attempt['ext']}"
+        out_path = os.path.join(tmp_dir, out_name)
+        shutil.copyfile(selected_attempt["path"], out_path)
+
+        SESSIONS[session_id] = {
+            "dir": tmp_dir,
+            "image": out_name,
+            "created": time.time(),
+        }
+
+        return jsonify(
+            {
+                "session": session_id,
+                "image": f"/download/{session_id}/{out_name}",
+                "original_bytes": original_size,
+                "compressed_bytes": selected_attempt["size"],
+                "reduction_percent": round(selected_attempt["reduction"], 2),
+                "target_percent": round(target_percent, 2),
+                "achieved_target": selected_attempt["reduction"] >= target_percent,
+                "force_requested": force_compression,
+                "forced_used": forced_used,
+            }
+        )
+
+    except Exception as e:
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return jsonify({"error": f"Image compression failed: {e}"}), 500
+
 
 @app.route("/file/<session_id>/<filename>")
 def serve_file(session_id, filename):
@@ -431,6 +793,35 @@ HTML = """<!DOCTYPE html>
     --sw-card: #ffffff;
     --sw-line: #f0dfd2;
     --sw-green: #27ae60;
+    --sw-surface-soft: #fff6ef;
+    --sw-surface-tint: #fff4eb;
+    --sw-surface-alt: #fff9f4;
+    --sw-accent-wash: #ffd8bb;
+    --sw-shadow: rgba(31, 31, 36, .06);
+    --sw-hero-shadow: rgba(252, 128, 25, .13);
+    --sw-tab-shadow: rgba(252, 128, 25, .36);
+    --sw-btn-shadow: rgba(252, 128, 25, .28);
+    --sw-gallery-shadow: rgba(0, 0, 0, .15);
+    --sw-overlay: rgba(0, 0, 0, .8);
+  }
+
+  body.dark-mode {
+    --sw-ink: #f4eee9;
+    --sw-muted: #bdaea2;
+    --sw-bg: #131110;
+    --sw-card: #1d1917;
+    --sw-line: #3c3028;
+    --sw-green: #31b96d;
+    --sw-surface-soft: #241d1a;
+    --sw-surface-tint: #2b221d;
+    --sw-surface-alt: #201a17;
+    --sw-accent-wash: #5e4128;
+    --sw-shadow: rgba(0, 0, 0, .32);
+    --sw-hero-shadow: rgba(0, 0, 0, .28);
+    --sw-tab-shadow: rgba(252, 128, 25, .22);
+    --sw-btn-shadow: rgba(252, 128, 25, .22);
+    --sw-gallery-shadow: rgba(0, 0, 0, .3);
+    --sw-overlay: rgba(0, 0, 0, .88);
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -438,10 +829,18 @@ HTML = """<!DOCTYPE html>
     font-family: "Poppins", sans-serif;
     color: var(--sw-ink);
     min-height: 100vh;
+    transition: background .22s ease, color .22s ease;
     background:
-      radial-gradient(circle at 85% -10%, #ffd8bd 0%, rgba(255, 216, 189, 0) 40%),
-      radial-gradient(circle at 10% 0%, #ffe8d7 0%, rgba(255, 232, 215, 0) 42%),
+      radial-gradient(circle at 85% -10%, rgba(255, 216, 189, .95) 0%, rgba(255, 216, 189, 0) 40%),
+      radial-gradient(circle at 10% 0%, rgba(255, 232, 215, .95) 0%, rgba(255, 232, 215, 0) 42%),
       var(--sw-bg);
+  }
+
+  body.dark-mode {
+    background:
+      radial-gradient(circle at 85% -10%, rgba(252, 128, 25, .22) 0%, rgba(252, 128, 25, 0) 38%),
+      radial-gradient(circle at 10% 0%, rgba(245, 144, 71, .14) 0%, rgba(245, 144, 71, 0) 42%),
+      linear-gradient(180deg, #171310 0%, var(--sw-bg) 100%);
   }
 
   .container {
@@ -489,12 +888,73 @@ HTML = """<!DOCTYPE html>
     font-weight: 500;
   }
 
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    padding: .58rem .8rem;
+    border-radius: 999px;
+    border: 1px solid var(--sw-line);
+    background: rgba(255, 255, 255, .72);
+    color: var(--sw-ink);
+    cursor: pointer;
+    font: inherit;
+    font-size: .82rem;
+    font-weight: 700;
+    transition: background .18s ease, border-color .18s ease, transform .18s ease;
+    backdrop-filter: blur(12px);
+  }
+
+  body.dark-mode .theme-toggle {
+    background: rgba(35, 28, 24, .84);
+  }
+
+  .theme-toggle:hover {
+    transform: translateY(-1px);
+  }
+
+  .theme-toggle-track {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #ffd29e, #ffb357);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .24);
+  }
+
+  .theme-toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform .18s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+  }
+
+  body.dark-mode .theme-toggle-track {
+    background: linear-gradient(135deg, #5a3b24, #362821);
+  }
+
+  body.dark-mode .theme-toggle-thumb {
+    transform: translateX(18px);
+    background: #ffd7af;
+  }
+
   .hero-card {
-    background: linear-gradient(120deg, #fff 0%, #fff6ef 100%);
-    border: 1px solid #ffe0c7;
+    background: linear-gradient(120deg, var(--sw-card) 0%, var(--sw-surface-soft) 100%);
+    border: 1px solid var(--sw-line);
     border-radius: 24px;
     padding: 1.4rem 1.25rem;
-    box-shadow: 0 18px 38px rgba(252, 128, 25, .13);
+    box-shadow: 0 18px 38px var(--sw-hero-shadow);
     animation: rise .45s ease-out;
   }
 
@@ -525,9 +985,9 @@ HTML = """<!DOCTYPE html>
   }
 
   .pill {
-    border: 1px solid #ffd9bc;
-    background: #fff;
-    color: #7f4a1d;
+    border: 1px solid var(--sw-line);
+    background: var(--sw-card);
+    color: var(--sw-ink);
     padding: .45rem .68rem;
     border-radius: 999px;
     font-size: .78rem;
@@ -543,12 +1003,12 @@ HTML = """<!DOCTYPE html>
   }
   .tab-btn {
     padding: .66rem 1.1rem;
-    background: #fff;
+    background: var(--sw-card);
     border: 1px solid var(--sw-line);
     cursor: pointer;
     font-size: 0.86rem;
     font-weight: 700;
-    color: #6c6c74;
+    color: var(--sw-muted);
     border-radius: 999px;
     transition: all .15s;
   }
@@ -556,7 +1016,7 @@ HTML = """<!DOCTYPE html>
     background: linear-gradient(135deg, var(--sw-orange), var(--sw-orange-deep));
     color: #fff;
     border-color: transparent;
-    box-shadow: 0 11px 24px rgba(252, 128, 25, .36);
+    box-shadow: 0 11px 24px var(--sw-tab-shadow);
   }
 
   .tab-content { display: none; }
@@ -575,8 +1035,8 @@ HTML = """<!DOCTYPE html>
     background: var(--sw-card);
     border-radius: 18px;
     padding: 1.15rem;
-    border: 1px solid #f4e0d1;
-    box-shadow: 0 10px 30px rgba(31, 31, 36, .06);
+    border: 1px solid var(--sw-line);
+    box-shadow: 0 10px 30px var(--sw-shadow);
     animation: rise .55s ease-out;
   }
 
@@ -591,22 +1051,69 @@ HTML = """<!DOCTYPE html>
     font-size: 0.76rem;
     font-weight: 700;
     margin-bottom: 0.34rem;
-    color: #595965;
+    color: var(--sw-muted);
     text-transform: uppercase;
     letter-spacing: .35px;
   }
 
   .field { margin-bottom: .85rem; }
 
+  .range-wrap {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: .65rem;
+    align-items: center;
+  }
+
+  input[type=range] {
+    accent-color: var(--sw-orange);
+    width: 100%;
+  }
+
+  .range-value {
+    min-width: 64px;
+    text-align: center;
+    font-weight: 700;
+    font-size: .84rem;
+    color: var(--sw-ink);
+    background: var(--sw-surface-tint);
+    border: 1px solid var(--sw-accent-wash);
+    border-radius: 10px;
+    padding: .32rem .5rem;
+  }
+
+  .force-row {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    margin-top: .2rem;
+  }
+
+  .force-row input[type=checkbox] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--sw-orange);
+  }
+
+  .check-label {
+    margin: 0;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--sw-muted);
+  }
+
   input[type=text], select {
     width: 100%;
     padding: .66rem .72rem;
-    border: 1px solid #efddcf;
+    border: 1px solid var(--sw-line);
     border-radius: 11px;
     font-size: 0.9rem;
     outline: none;
     transition: border .15s, box-shadow .15s;
-    background: #fff;
+    background: var(--sw-card);
+    color: var(--sw-ink);
   }
 
   input[type=text]:focus, select:focus {
@@ -619,22 +1126,23 @@ HTML = """<!DOCTYPE html>
     flex: 1;
     text-align: center;
     padding: .5rem;
-    border: 1px solid #efddcf;
+    border: 1px solid var(--sw-line);
     border-radius: 11px;
     cursor: pointer;
     font-size: 0.83rem;
     font-weight: 600;
     transition: all .15s;
-    color: #444;
+    color: var(--sw-ink);
     text-transform: none;
     letter-spacing: 0;
     margin-bottom: 0;
+    background: var(--sw-card);
   }
 
   .radio-group input { display: none; }
   .radio-group input:checked + label {
-    background: #fff4eb;
-    color: #7d3f13;
+    background: var(--sw-surface-tint);
+    color: var(--sw-ink);
     border-color: #ffc799;
   }
 
@@ -646,15 +1154,15 @@ HTML = """<!DOCTYPE html>
     cursor: pointer;
     transition: all .18s;
     margin-bottom: .75rem;
-    background: linear-gradient(180deg, #fff9f4 0%, #fff 100%);
+    background: linear-gradient(180deg, var(--sw-surface-alt) 0%, var(--sw-card) 100%);
   }
 
   .drop-zone:hover { transform: translateY(-2px); }
-  .drop-zone.dragover { border-color: var(--sw-orange); background: #fff2e7; }
+  .drop-zone.dragover { border-color: var(--sw-orange); background: var(--sw-surface-tint); }
   .drop-zone input { display: none; }
 
-  .drop-zone p { font-size: 0.84rem; color: #807b75; margin-top: 0.48rem; }
-  .drop-zone .filename { font-size: 0.84rem; color: #6e360f; font-weight: 600; margin-top: .46rem; }
+  .drop-zone p { font-size: 0.84rem; color: var(--sw-muted); margin-top: 0.48rem; }
+  .drop-zone .filename { font-size: 0.84rem; color: var(--sw-ink); font-weight: 600; margin-top: .46rem; }
 
   .btn {
     display: block;
@@ -669,13 +1177,13 @@ HTML = """<!DOCTYPE html>
     cursor: pointer;
     transition: transform .15s ease, box-shadow .15s ease;
     margin-top: 0.45rem;
-    box-shadow: 0 10px 20px rgba(252, 128, 25, .28);
+    box-shadow: 0 10px 20px var(--sw-btn-shadow);
   }
 
   .btn:hover { transform: translateY(-1px); }
   .btn:disabled { background: #aaa; cursor: not-allowed; }
 
-  .status { font-size: 0.85rem; margin-top: .8rem; min-height: 1.2rem; color: #555; }
+  .status { font-size: 0.85rem; margin-top: .8rem; min-height: 1.2rem; color: var(--sw-muted); }
   .status.error { color: #c0392b; font-weight: 600; }
   .status.ok { color: #1f8c4d; font-weight: 600; }
 
@@ -699,22 +1207,22 @@ HTML = """<!DOCTYPE html>
   .gallery img {
     width: 100%;
     border-radius: 12px;
-    border: 1px solid #f1e0d2;
+    border: 1px solid var(--sw-line);
     object-fit: contain;
-    background: #fff;
+    background: var(--sw-card);
     cursor: pointer;
     transition: box-shadow .15s, transform .15s;
   }
 
-  .gallery img:hover { box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+  .gallery img:hover { box-shadow: 0 4px 14px var(--sw-gallery-shadow); }
   .empty {
-    color: #938c85;
+    color: var(--sw-muted);
     font-size: 0.9rem;
     text-align: center;
     padding: 2.5rem 0;
-    border: 1px dashed #ebd7c8;
+    border: 1px dashed var(--sw-line);
     border-radius: 14px;
-    background: #fff;
+    background: var(--sw-card);
   }
 
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
@@ -724,18 +1232,20 @@ HTML = """<!DOCTYPE html>
     to { opacity: 1; transform: translateY(0); }
   }
 
-  #lightbox { display:none; position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:100; align-items:center; justify-content:center; }
+  #lightbox { display:none; position:fixed; inset:0; background:var(--sw-overlay); z-index:100; align-items:center; justify-content:center; }
   #lightbox.open { display:flex; }
   #lightbox img { max-width:90vw; max-height:90vh; border-radius:8px; }
   #lightbox-close { position:fixed; top:1rem; right:1.2rem; color:#fff; font-size:2rem; cursor:pointer; line-height:1; }
   .file-list { list-style: none; margin-top: .5rem; }
-  .file-list li { font-size: 0.82rem; color: #2b2d42; padding: .15rem 0; display:flex; align-items:center; gap:.4rem; }
+  .file-list li { font-size: 0.82rem; color: var(--sw-ink); padding: .15rem 0; display:flex; align-items:center; gap:.4rem; }
   .file-list li .remove { color:#c0392b; cursor:pointer; font-weight:700; }
 
   @media (max-width: 920px) {
     .hero-grid { grid-template-columns: 1fr; }
     .pill-row { justify-content: flex-start; }
     main { grid-template-columns: 1fr; }
+    .topbar { align-items: flex-start; }
+    .topbar-actions { width: 100%; justify-content: space-between; }
   }
 </style>
 </head>
@@ -747,7 +1257,15 @@ HTML = """<!DOCTYPE html>
         <span class="brand-badge">S</span>
         <span>Swift Converter</span>
       </div>
-      <div class="top-note">Fast, clean, and one-click file delivery</div>
+      <div class="topbar-actions">
+        <div class="top-note">Fast, clean, and one-click file delivery</div>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" aria-pressed="false">
+          <span class="theme-toggle-track" aria-hidden="true">
+            <span class="theme-toggle-thumb"></span>
+          </span>
+          <span id="themeToggleLabel">Dark mode</span>
+        </button>
+      </div>
     </div>
     <div class="hero-card">
       <div class="hero-grid">
@@ -758,7 +1276,7 @@ HTML = """<!DOCTYPE html>
         <div class="pill-row">
           <span class="pill">Lightning Fast</span>
           <span class="pill">Secure Sessions</span>
-          <span class="pill">HD Output</span>
+          <span class="pill">No Watermark</span>
           <span class="pill">No Signup</span>
         </div>
       </div>
@@ -769,6 +1287,8 @@ HTML = """<!DOCTYPE html>
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('pdf2img')">PDF &rarr; Image</button>
   <button class="tab-btn" onclick="switchTab('img2pdf')">Image &rarr; PDF</button>
+  <button class="tab-btn" onclick="switchTab('pdfcompress')">Compress PDF</button>
+  <button class="tab-btn" onclick="switchTab('imgcompress')">Compress Image</button>
 </div>
 
 <main id="tab-pdf2img" class="tab-content active">
@@ -805,7 +1325,7 @@ HTML = """<!DOCTYPE html>
 
     <div class="field">
       <label for="pages">Page Range</label>
-      <input type="text" id="pages" value="all" placeholder='all, 1-3, 1,4,6, 2-5,8'>
+      <input type="text" id="pages" value="all" placeholder='All, 1-3, 1,4,6, 2-5,8'>
     </div>
 
     <button class="btn" id="convertBtn" onclick="convertPdf2Img()">Convert</button>
@@ -816,6 +1336,84 @@ HTML = """<!DOCTYPE html>
   <div class="panel right">
     <h2>Preview</h2>
     <div id="gallery" class="empty">Converted images will appear here.</div>
+  </div>
+</main>
+
+<main id="tab-imgcompress" class="tab-content">
+  <div class="panel">
+    <h2>Image Compression Settings</h2>
+
+    <div class="field">
+      <div class="drop-zone" id="compressImgDropZone">
+        <input type="file" id="compressImgInput" accept="image/*">
+        <svg width="36" height="36" fill="none" stroke="#bbb" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg>
+        <p>Click or drag an image here</p>
+        <div class="filename" id="compressImgFileName"></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="imgTargetReduction">Target Reduction</label>
+      <div class="range-wrap">
+        <input type="range" id="imgTargetReduction" min="5" max="80" step="5" value="30">
+        <span id="imgTargetReductionValue" class="range-value">30%</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="force-row">
+        <input type="checkbox" id="imgForceCompression">
+        <label for="imgForceCompression" class="check-label">Force compression (may reduce visual quality)</label>
+      </div>
+    </div>
+
+    <button class="btn" id="imgCompressBtn" onclick="compressImageFile()">Compress Image</button>
+    <div id="imgCompressStatus" class="status"></div>
+    <a id="imgCompressDownload" class="download-btn" download>Download Compressed Image</a>
+  </div>
+
+  <div class="panel right">
+    <h2>Compression Result</h2>
+    <div id="imgCompressResult" class="empty">Image compression details will appear here.</div>
+  </div>
+</main>
+
+<main id="tab-pdfcompress" class="tab-content">
+  <div class="panel">
+    <h2>Compression Settings</h2>
+
+    <div class="field">
+      <div class="drop-zone" id="compressDropZone">
+        <input type="file" id="compressInput" accept=".pdf">
+        <svg width="36" height="36" fill="none" stroke="#bbb" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg>
+        <p>Click or drag a PDF here</p>
+        <div class="filename" id="compressFileName"></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="targetReduction">Target Reduction</label>
+      <div class="range-wrap">
+        <input type="range" id="targetReduction" min="5" max="80" step="5" value="30">
+        <span id="targetReductionValue" class="range-value">30%</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="force-row">
+        <input type="checkbox" id="forceCompression">
+        <label for="forceCompression" class="check-label">Force compression (may reduce visual quality)</label>
+      </div>
+    </div>
+
+    <button class="btn" id="compressBtn" onclick="compressPdfFile()">Compress PDF</button>
+    <div id="compressStatus" class="status"></div>
+    <a id="compressDownload" class="download-btn" download>Download Compressed PDF</a>
+  </div>
+
+  <div class="panel right">
+    <h2>Compression Result</h2>
+    <div id="compressResult" class="empty">Compression details will appear here.</div>
   </div>
 </main>
 
@@ -875,6 +1473,36 @@ function switchTab(tab) {
   document.getElementById('tab-' + tab).classList.add('active');
   event.target.classList.add('active');
 }
+
+const themeToggle = document.getElementById("themeToggle");
+const themeToggleLabel = document.getElementById("themeToggleLabel");
+
+function updateThemeToggle(isDark) {
+  themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  themeToggleLabel.textContent = isDark ? "Light mode" : "Dark mode";
+}
+
+function applyTheme(theme) {
+  const isDark = theme === "dark";
+  document.body.classList.toggle("dark-mode", isDark);
+  updateThemeToggle(isDark);
+}
+
+function getInitialTheme() {
+  const storedTheme = window.localStorage.getItem("theme");
+  if (storedTheme === "dark" || storedTheme === "light") {
+    return storedTheme;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+applyTheme(getInitialTheme());
+
+themeToggle.addEventListener("click", () => {
+  const nextTheme = document.body.classList.contains("dark-mode") ? "light" : "dark";
+  window.localStorage.setItem("theme", nextTheme);
+  applyTheme(nextTheme);
+});
 
 const dropZone = document.getElementById("dropZone");
 const pdfInput = document.getElementById("pdfInput");
@@ -1027,6 +1655,168 @@ async function convertImg2Pdf() {
   }
 }
 
+const compressDropZone = document.getElementById("compressDropZone");
+const compressInput = document.getElementById("compressInput");
+const compressFileName = document.getElementById("compressFileName");
+const targetReduction = document.getElementById("targetReduction");
+const targetReductionValue = document.getElementById("targetReductionValue");
+const forceCompression = document.getElementById("forceCompression");
+
+const compressImgDropZone = document.getElementById("compressImgDropZone");
+const compressImgInput = document.getElementById("compressImgInput");
+const compressImgFileName = document.getElementById("compressImgFileName");
+const imgTargetReduction = document.getElementById("imgTargetReduction");
+const imgTargetReductionValue = document.getElementById("imgTargetReductionValue");
+const imgForceCompression = document.getElementById("imgForceCompression");
+
+targetReduction.addEventListener("input", () => {
+  targetReductionValue.textContent = `${targetReduction.value}%`;
+});
+
+imgTargetReduction.addEventListener("input", () => {
+  imgTargetReductionValue.textContent = `${imgTargetReduction.value}%`;
+});
+
+compressDropZone.addEventListener("click", () => compressInput.click());
+compressInput.addEventListener("change", () => {
+  if (compressInput.files[0]) compressFileName.textContent = compressInput.files[0].name;
+});
+compressDropZone.addEventListener("dragover", e => { e.preventDefault(); compressDropZone.classList.add("dragover"); });
+compressDropZone.addEventListener("dragleave", () => compressDropZone.classList.remove("dragover"));
+compressDropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  compressDropZone.classList.remove("dragover");
+  const f = e.dataTransfer.files[0];
+  if (f && f.type === "application/pdf") {
+    const dt = new DataTransfer(); dt.items.add(f);
+    compressInput.files = dt.files;
+    compressFileName.textContent = f.name;
+  }
+});
+
+compressImgDropZone.addEventListener("click", () => compressImgInput.click());
+compressImgInput.addEventListener("change", () => {
+  if (compressImgInput.files[0]) compressImgFileName.textContent = compressImgInput.files[0].name;
+});
+compressImgDropZone.addEventListener("dragover", e => { e.preventDefault(); compressImgDropZone.classList.add("dragover"); });
+compressImgDropZone.addEventListener("dragleave", () => compressImgDropZone.classList.remove("dragover"));
+compressImgDropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  compressImgDropZone.classList.remove("dragover");
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith("image/")) {
+    const dt = new DataTransfer(); dt.items.add(f);
+    compressImgInput.files = dt.files;
+    compressImgFileName.textContent = f.name;
+  }
+});
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / (1024 ** idx)).toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
+}
+
+async function compressPdfFile() {
+  const file = compressInput.files[0];
+  if (!file) { setStatus("compressStatus", "Please select a PDF file.", "error"); return; }
+
+  const targetPercent = Number(targetReduction.value || 30);
+  const btn = document.getElementById("compressBtn");
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Compressing...';
+  setStatus("compressStatus", "Uploading and compressing...", "");
+
+  const form = new FormData();
+  form.append("pdf", file);
+  form.append("target_percent", String(targetPercent));
+  form.append("force_compression", forceCompression.checked ? "true" : "false");
+
+  try {
+    const res = await fetch("/compress-pdf", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) { setStatus("compressStatus", data.error || "Compression failed.", "error"); return; }
+
+    const hitTargetText = data.achieved_target ? "Target met" : "Best possible for this file";
+    const forceText = data.forced_used ? " Forced mode applied." : "";
+    setStatus("compressStatus", `Compression complete. ${hitTargetText}.`, "ok");
+    const result = document.getElementById("compressResult");
+    result.className = "";
+    result.innerHTML = `
+      <p><strong>Target:</strong> ${data.target_percent}%</p>
+      <p><strong>Original:</strong> ${formatBytes(data.original_bytes)}</p>
+      <p><strong>Compressed:</strong> ${formatBytes(data.compressed_bytes)}</p>
+      <p><strong>Reduction:</strong> ${data.reduction_percent}%</p>
+    `;
+
+    if (forceText) {
+      setStatus("compressStatus", `Compression complete. ${hitTargetText}.${forceText}`, "ok");
+    }
+
+    const dl = document.getElementById("compressDownload");
+    dl.dataset.url = data.pdf;
+    dl.dataset.name = data.pdf.split('/').pop() || "compressed.pdf";
+    dl.style.display = "block";
+  } catch (e) {
+    setStatus("compressStatus", "Network error: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Compress PDF";
+  }
+}
+
+async function compressImageFile() {
+  const file = compressImgInput.files[0];
+  if (!file) { setStatus("imgCompressStatus", "Please select an image file.", "error"); return; }
+
+  const targetPercent = Number(imgTargetReduction.value || 30);
+  const btn = document.getElementById("imgCompressBtn");
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Compressing...';
+  setStatus("imgCompressStatus", "Uploading and compressing...", "");
+
+  const form = new FormData();
+  form.append("image", file);
+  form.append("target_percent", String(targetPercent));
+  form.append("force_compression", imgForceCompression.checked ? "true" : "false");
+
+  try {
+    const res = await fetch("/compress-image", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) { setStatus("imgCompressStatus", data.error || "Compression failed.", "error"); return; }
+
+    const hitTargetText = data.achieved_target ? "Target met" : "Best possible for this file";
+    const forceText = data.forced_used ? " Forced mode applied." : "";
+    setStatus("imgCompressStatus", `Compression complete. ${hitTargetText}.`, "ok");
+
+    const result = document.getElementById("imgCompressResult");
+    result.className = "";
+    result.innerHTML = `
+      <p><strong>Target:</strong> ${data.target_percent}%</p>
+      <p><strong>Original:</strong> ${formatBytes(data.original_bytes)}</p>
+      <p><strong>Compressed:</strong> ${formatBytes(data.compressed_bytes)}</p>
+      <p><strong>Reduction:</strong> ${data.reduction_percent}%</p>
+    `;
+
+    if (forceText) {
+      setStatus("imgCompressStatus", `Compression complete. ${hitTargetText}.${forceText}`, "ok");
+    }
+
+    const dl = document.getElementById("imgCompressDownload");
+    dl.dataset.url = data.image;
+    dl.dataset.name = data.image.split('/').pop() || "compressed-image.jpg";
+    dl.style.display = "block";
+  } catch (e) {
+    setStatus("imgCompressStatus", "Network error: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Compress Image";
+  }
+}
+
 function setStatus(id, msg, cls) {
   const el = document.getElementById(id);
   el.textContent = msg; el.className = "status " + cls;
@@ -1090,6 +1880,16 @@ document.getElementById("img2pdfDownload").addEventListener("click", (e) => {
   downloadFromEndpoint("img2pdfDownload", "img2pdfStatus");
 });
 
+document.getElementById("compressDownload").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadFromEndpoint("compressDownload", "compressStatus");
+});
+
+document.getElementById("imgCompressDownload").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadFromEndpoint("imgCompressDownload", "imgCompressStatus");
+});
+
 function openLightbox(src) {
   document.getElementById("lightboxImg").src = src;
   document.getElementById("lightbox").classList.add("open");
@@ -1107,5 +1907,5 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeLightbo
 
 if __name__ == "__main__":
     print("Starting PDF to Image Converter...")
-    print("Open http://127.0.0.1:5000 in your browser")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    print("Open http://127.0.0.1:5001 in your browser")
+    app.run(host="127.0.0.1", port=5001, debug=False)
