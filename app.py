@@ -287,64 +287,66 @@ def convert():
         pdf_path = os.path.join(tmp_dir, "input.pdf")
         pdf_file.save(pdf_path)
 
-        doc = fitz.open(pdf_path)
-        total = len(doc)
-
-        pages = parse_page_range(page_range_str, total)
-        if not pages:
-            return jsonify({"error": "No pages selected."}), 400
-
-        scale = dpi / 72.0
-        mat = fitz.Matrix(scale, scale)
-        ext = "jpg" if fmt == "JPEG" else "png"
-        image_names = []
-
-        for idx in pages:
-            page = doc[idx]
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            name = f"page_{idx + 1:04d}.{ext}"
-            img_path = os.path.join(tmp_dir, name)
-            if fmt == "JPEG":
-                pix.save(img_path, jpg_quality=92)
-            else:
-                pix.save(img_path)
-            image_names.append(name)
-
-        doc.close()
-
         zip_name = "converted_images.zip"
         zip_path = os.path.join(tmp_dir, zip_name)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in image_names:
-                zf.write(os.path.join(tmp_dir, name), arcname=name)
+        image_names = []
+
+        doc = fitz.open(pdf_path)
+        try:
+          total = len(doc)
+
+          pages = parse_page_range(page_range_str, total)
+          if not pages:
+            return jsonify({"error": "No pages selected."}), 400
+
+          scale = dpi / 72.0
+          mat = fitz.Matrix(scale, scale)
+          ext = "jpg" if fmt == "JPEG" else "png"
+
+          with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
+            for idx in pages:
+              page = doc[idx]
+              pix = page.get_pixmap(matrix=mat, alpha=False)
+              name = f"page_{idx + 1:04d}.{ext}"
+              img_path = os.path.join(tmp_dir, name)
+
+              if fmt == "JPEG":
+                pix.save(img_path, jpg_quality=92)
+              else:
+                pix.save(img_path)
+
+              image_names.append(name)
+              zf.write(img_path, arcname=name)
+        finally:
+          doc.close()
 
         SESSIONS[session_id] = {
-            "dir": tmp_dir,
-            "images": image_names,
-            "zip": zip_name,
-            "created": time.time(),
+          "dir": tmp_dir,
+          "images": image_names,
+          "zip": zip_name,
+          "created": time.time(),
         }
 
         if db is not None:
-            db.conversions.insert_one(
-                {
-                    "type": "pdf_to_image",
-                    "session_id": session_id,
-                    "format": fmt,
-                    "dpi": dpi,
-                    "pages_converted": len(pages),
-                    "total_pages": total,
-                    "created_at": datetime.now(timezone.utc),
-                }
-            )
+          db.conversions.insert_one(
+            {
+              "type": "pdf_to_image",
+              "session_id": session_id,
+              "format": fmt,
+              "dpi": dpi,
+              "pages_converted": len(pages),
+              "total_pages": total,
+              "created_at": datetime.now(timezone.utc),
+            }
+          )
 
         return jsonify(
-            {
-                "session": session_id,
-                "count": len(pages),
-                "images": [f"/file/{session_id}/{n}" for n in image_names],
+          {
+            "session": session_id,
+            "count": len(pages),
+            "images": [f"/file/{session_id}/{n}" for n in image_names],
             "zip": f"/download/{session_id}/{zip_name}",
-            }
+          }
         )
 
     except ValueError as e:
@@ -1504,19 +1506,34 @@ HTML = """<!DOCTYPE html>
   .pill-row {
     display: flex;
     flex-wrap: wrap;
-    gap: .45rem;
+    gap: .5rem .7rem;
     justify-content: flex-end;
   }
 
   .pill {
-    border: 1px solid var(--sw-line);
-    background: var(--sw-card);
-    color: var(--sw-ink);
-    padding: .45rem .68rem;
-    border-radius: 999px;
-    font-size: .78rem;
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: .38rem;
+    border: none;
+    background: transparent;
+    color: var(--sw-muted);
+    padding: .1rem 0;
+    border-radius: 0;
+    font-size: .74rem;
+    font-weight: 700;
+    letter-spacing: .35px;
+    text-transform: uppercase;
     animation: rise .5s ease-out both;
+  }
+
+  .pill::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--sw-orange), var(--sw-orange-deep));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--sw-orange) 18%, transparent);
+    flex: 0 0 auto;
   }
   .pill:nth-child(1) { animation-delay: .1s; }
   .pill:nth-child(2) { animation-delay: .17s; }
@@ -1526,6 +1543,7 @@ HTML = """<!DOCTYPE html>
   .tabs {
     display: flex;
     flex-wrap: wrap;
+    justify-content: center;
     gap: .6rem;
     max-width: 1140px;
     margin: .7rem auto 0;
@@ -2004,7 +2022,6 @@ HTML = """<!DOCTYPE html>
           <p>Upload PDFs or images, pick your format, and get instantly.</p>
         </div>
         <div class="pill-row">
-          <span class="pill">Lightning Fast</span>
           <span class="pill">Secure Sessions</span>
           <span class="pill">No Watermark</span>
           <span class="pill">No Signup</span>
@@ -3246,6 +3263,6 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeLightbo
 """
 
 if __name__ == "__main__":
-    print("Starting PDF to Image Converter...")
-    print("Open http://127.0.0.1:5001 in your browser")
-    app.run(host="127.0.0.1", port=5001, debug=False, use_reloader=True)
+  print("Starting PDF to Image Converter...")
+  print("Open http://127.0.0.1:5001 in your browser")
+  app.run(host="127.0.0.1", port=5001, debug=False, use_reloader=False)
