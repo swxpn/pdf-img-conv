@@ -152,8 +152,6 @@ elif not razorpay:
 # Temp session store: session_id -> {"dir": path, "images": [...], "zip": path}
 SESSIONS: dict = {}
 SESSION_TTL = 600  # seconds - clean up after 10 minutes
-HOSTING_MULTI_PAGE_DPI_LIMIT = int(os.environ.get("HOSTING_MULTI_PAGE_DPI_LIMIT", "100"))
-HOSTING_MULTI_PAGE_THRESHOLD = int(os.environ.get("HOSTING_MULTI_PAGE_THRESHOLD", "4"))
 
 
 # Helpers
@@ -301,12 +299,7 @@ def convert():
           if not pages:
             return jsonify({"error": "No pages selected."}), 400
 
-          effective_dpi = dpi
-          # On constrained hosting, many high-DPI pages can time out or OOM.
-          if len(pages) > HOSTING_MULTI_PAGE_THRESHOLD and dpi > HOSTING_MULTI_PAGE_DPI_LIMIT:
-            effective_dpi = HOSTING_MULTI_PAGE_DPI_LIMIT
-
-          scale = effective_dpi / 72.0
+          scale = dpi / 72.0
           mat = fitz.Matrix(scale, scale)
           ext = "jpg" if fmt == "JPEG" else "png"
 
@@ -324,9 +317,6 @@ def convert():
 
               image_names.append(name)
               zf.write(img_path, arcname=name)
-              # Release page-level objects early to keep memory stable on hosting.
-              del pix
-              del page
         finally:
           doc.close()
 
@@ -354,8 +344,6 @@ def convert():
           {
             "session": session_id,
             "count": len(pages),
-            "requested_dpi": dpi,
-            "effective_dpi": effective_dpi,
             "images": [f"/file/{session_id}/{n}" for n in image_names],
             "zip": f"/download/{session_id}/{zip_name}",
           }
@@ -2341,10 +2329,7 @@ async function convertPdf2Img() {
     const data = await res.json();
     if (!res.ok) { setStatus("status", data.error || "Conversion failed.", "error"); return; }
 
-    const usedDpi = Number(data.effective_dpi || dpi);
-    const requestedDpi = Number(data.requested_dpi || dpi);
-    const dpiNote = usedDpi !== requestedDpi ? ` (auto-adjusted from ${requestedDpi} DPI for multi-page stability)` : "";
-    setStatus("status", `Converted ${data.count} page(s) to ${fmt} at ${usedDpi} DPI${dpiNote}.`, "ok");
+    setStatus("status", `Converted ${data.count} page(s) to ${fmt} at ${dpi} DPI.`, "ok");
     renderGallery(data.images);
     const dl = document.getElementById("downloadBtn");
     dl.dataset.url = data.zip;
