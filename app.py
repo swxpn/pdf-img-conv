@@ -276,6 +276,21 @@ def download_binary(url: str) -> bytes:
     return res.content
 
 
+def pdfco_error_message(response: requests.Response, fallback: str) -> str:
+  try:
+    payload = response.json()
+  except ValueError:
+    text = (response.text or "").strip()
+    if text:
+      return f"{fallback} ({response.status_code}): {text[:240]}"
+    return f"{fallback} ({response.status_code})"
+
+  message = payload.get("message") or payload.get("error") or payload.get("status")
+  if message:
+    return f"{fallback} ({response.status_code}): {message}"
+  return f"{fallback} ({response.status_code})"
+
+
 def convert_pdf_with_pdfco(pdf_path: str, fmt: str, pages: list, tmp_dir: str):
     if not PDFCO_API_KEY:
         raise RuntimeError("PDF.co API key is not configured on this server.")
@@ -292,7 +307,8 @@ def convert_pdf_with_pdfco(pdf_path: str, fmt: str, pages: list, tmp_dir: str):
             timeout=120,
         )
 
-    upload_res.raise_for_status()
+    if upload_res.status_code >= 400:
+      raise RuntimeError(pdfco_error_message(upload_res, "PDF.co upload failed"))
     upload_data = upload_res.json()
     if upload_data.get("error") is True:
         raise RuntimeError(upload_data.get("message") or "Failed to upload PDF to PDF.co.")
@@ -306,7 +322,6 @@ def convert_pdf_with_pdfco(pdf_path: str, fmt: str, pages: list, tmp_dir: str):
     convert_payload = {
         "url": uploaded_url,
         "async": False,
-        "name": "converted_images.zip",
     }
     if page_spec:
         convert_payload["pages"] = page_spec
@@ -317,7 +332,8 @@ def convert_pdf_with_pdfco(pdf_path: str, fmt: str, pages: list, tmp_dir: str):
         json=convert_payload,
         timeout=240,
     )
-    convert_res.raise_for_status()
+    if convert_res.status_code >= 400:
+      raise RuntimeError(pdfco_error_message(convert_res, "PDF.co convert failed"))
     convert_data = convert_res.json()
 
     if convert_data.get("error") is True:
