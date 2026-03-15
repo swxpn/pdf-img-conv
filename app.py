@@ -1012,7 +1012,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF &amp; Image Converter</title>
+<title>Swift Convert</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="shortcut icon" href="/favicon.svg">
 <script>
@@ -1800,7 +1800,7 @@ HTML = """<!DOCTYPE html>
     <div class="hero-card">
       <div class="hero-grid">
         <div>
-          <h1>Quick conversions?</h1>
+          <h1>Free & Quick conversions?</h1>
           <p>Upload PDFs or images, pick your format, and get instantly.</p>
         </div>
         <div class="pill-row">
